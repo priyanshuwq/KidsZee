@@ -45,3 +45,12 @@ app.*.map.json
 /android/app/release
 
 .claude/
+
+# Local properties (contains SDK paths)
+local.properties
+
+# Gradle caches
+.gradle/
+
+# Generated files (build_runner)
+*.g.dart
