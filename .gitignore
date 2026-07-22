@@ -54,3 +54,5 @@ local.properties
 
 # Generated files (build_runner)
 *.g.dart
+*.mddart
+CHANGES.md
