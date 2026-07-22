@@ -1,0 +1,61 @@
+name: kidszee
+description: KidsZee RC IoT Controller — Playful robot controller for kids.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.4.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State Management & Navigation
+  flutter_riverpod: ^2.5.0
+  go_router: ^17.2.3
+
+  # Design & Assets
+  google_fonts: ^8.1.0
+  flutter_animate: ^4.5.0
+
+  # IoT Communication — Bluetooth Classic (Android ONLY — pinned, no caret)
+  flutter_blue_classic: ^0.1.0
+
+  # Inputs & Sensors
+  sensors_plus: ^7.0.0
+  speech_to_text: ^7.4.0
+  permission_handler: ^12.0.1
+
+  # Persistence
+  hive_flutter: ^1.1.0
+  shared_preferences: ^2.2.3
+
+  # Media & Icons
+  cupertino_icons: ^1.0.8
+  video_player: ^2.11.1
+  model_viewer_plus: ^1.10.0
+  url_launcher: ^6.3.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  build_runner: ^2.4.9
+  hive_generator: ^2.0.1
+  video_player_platform_interface: ^6.7.0
+  plugin_platform_interface: ^2.1.8
+  flutter_launcher_icons: ^0.14.4
+
+flutter_icons:
+  android: true
+  ios: true
+  image_path: "assests/app_icon.png"
+  min_sdk_android: 21
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assests/kidszee_transparent.png
+    - assests/Splash/animaton1.mp4
+    - assests/wombatics_otto_diy_robot.glb
