@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -13,16 +14,34 @@ import '../../core/utils/orientation.dart';
 // ─────────────────────────────────────────────────────────────────────────────
 // ENGLISH word map — checked per-word so "turn left now" → finds "LEFT".
 // Includes common ASR mis-hearings for short/ambiguous words.
+//
+// Multi-word commands (rotate clockwise / anticlockwise) are handled by
+// _matchWords which first checks for two-word phrases before single words.
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Two-word phrases checked first (order matters).
+const _enPhraseMap = <String, String>{
+  'ROTATE CLOCKWISE': 'RotateCW',
+  'ROTATE RIGHT': 'RotateCW',
+  'SPIN CLOCKWISE': 'RotateCW',
+  'SPIN RIGHT': 'RotateCW',
+  'ROTATE ANTICLOCKWISE': 'RotateCCW',
+  'ROTATE COUNTERCLOCKWISE': 'RotateCCW',
+  'ROTATE LEFT': 'RotateCCW',
+  'SPIN ANTICLOCKWISE': 'RotateCCW',
+  'SPIN COUNTERCLOCKWISE': 'RotateCCW',
+  'SPIN LEFT': 'RotateCCW',
+};
+
+/// Single-word fallback map.
 const _enWordMap = <String, String>{
   'FORWARD': 'Forward', 'FORWARDS': 'Forward',
   'BACKWARD': 'Backward', 'BACKWARDS': 'Backward', 'BACK': 'Backward',
   'RIGHT': 'Right', 'WRITE': 'Right',
   'LEFT': 'Left', 'LIFT': 'Left', 'LOFT': 'Left', 'LAUGHED': 'Left',
   'LAPPED': 'Left', 'LEPT': 'Left', 'LEAPT': 'Left', 'LEFTS': 'Left',
-  'STOP': 'Stop', 'STOPPED': 'Stop',
 };
-const _enChips = ['Forward', 'Backward', 'Right', 'Left', 'Stop'];
+const _enChips = ['Forward', 'Backward', 'Right', 'Left', 'Rotate CW', 'Rotate CCW'];
 
 class VoiceScreen extends ConsumerStatefulWidget {
   const VoiceScreen({super.key});
@@ -38,6 +57,7 @@ class _VoiceScreenState extends ConsumerState<VoiceScreen> with SingleTickerProv
   String _subtitle = 'Tap the mic to start';
   final List<String> _log = [];
   late AnimationController _rotCtrl;
+  Timer? _autoStopTimer;
 
   @override
   void initState() {
@@ -49,41 +69,63 @@ class _VoiceScreenState extends ConsumerState<VoiceScreen> with SingleTickerProv
 
   @override
   void dispose() {
+    _autoStopTimer?.cancel();
     _rotCtrl.dispose();
     _speech.stop();
     super.dispose();
   }
 
   void _sendVoiceCommand(String matched) {
-    final direction = switch (matched) {
-      'Forward' => CarDirection.forward,
-      'Backward' => CarDirection.backward,
-      'Left' => CarDirection.left,
-      'Right' => CarDirection.right,
-      'Stop' => CarDirection.stop,
-      _ => null,
-    };
-    if (direction == null) return;
+    // Cancel any pending auto-stop from a previous command.
+    _autoStopTimer?.cancel();
 
-    if (direction == CarDirection.stop) {
-      SmartCarCommands.stop();
-    } else {
-      SmartCarCommands.send(direction);
-      // Auto-stop after 2 seconds to prevent infinite continuous running
-      Future.delayed(const Duration(seconds: 2), SmartCarCommands.stop);
+    switch (matched) {
+      case 'Forward':
+        SmartCarCommands.send(CarDirection.forward);
+        _autoStopTimer = Timer(const Duration(seconds: 2), SmartCarCommands.stop);
+        break;
+      case 'Backward':
+        SmartCarCommands.send(CarDirection.backward);
+        _autoStopTimer = Timer(const Duration(seconds: 2), SmartCarCommands.stop);
+        break;
+      case 'Left':
+        SmartCarCommands.send(CarDirection.left);
+        _autoStopTimer = Timer(const Duration(milliseconds: 250), SmartCarCommands.stop);
+        break;
+      case 'Right':
+        SmartCarCommands.send(CarDirection.right);
+        _autoStopTimer = Timer(const Duration(milliseconds: 250), SmartCarCommands.stop);
+        break;
+      case 'RotateCW':
+        SmartCarCommands.send(CarDirection.right);
+        _autoStopTimer = Timer(const Duration(seconds: 2), SmartCarCommands.stop);
+        break;
+      case 'RotateCCW':
+        SmartCarCommands.send(CarDirection.left);
+        _autoStopTimer = Timer(const Duration(seconds: 2), SmartCarCommands.stop);
+        break;
     }
   }
 
-  /// Match recognised text against a word map.
-  /// 1) Per-word exact match (handles "turn left now" → "LEFT").
-  /// 2) Substring fallback (≥3 chars) for merged outputs.
+  /// Match recognised text against phrase and word maps.
+  /// 1) Check two-word phrases first (e.g. "rotate clockwise").
+  /// 2) Per-word exact match (handles "turn left now" → "LEFT").
+  /// 3) Substring fallback (≥3 chars) for merged outputs.
   static String? _matchWords(String text, Map<String, String> wordMap) {
-    final words = text.split(RegExp(r'\s+'));
+    final upper = text.toUpperCase();
+
+    // Phrase matching first — longest match wins.
+    for (final entry in _enPhraseMap.entries) {
+      if (upper.contains(entry.key)) return entry.value;
+    }
+
+    // Single-word matching.
+    final words = upper.split(RegExp(r'\s+'));
     for (final word in words) {
       if (wordMap.containsKey(word)) return wordMap[word];
     }
     for (final entry in wordMap.entries) {
-      if (entry.key.length >= 3 && text.contains(entry.key)) return entry.value;
+      if (entry.key.length >= 3 && upper.contains(entry.key)) return entry.value;
     }
     return null;
   }
@@ -123,17 +165,25 @@ class _VoiceScreenState extends ConsumerState<VoiceScreen> with SingleTickerProv
         if (!_isListening) return;
 
         final raw = result.recognizedWords;
-        final matched = _matchWords(raw.toUpperCase(), _enWordMap);
+        final matched = _matchWords(raw, _enWordMap);
 
         if (matched != null) {
           final cmd = matched;
           _speech.stop();
           ref.hapticFeedback(HapticStrength.heavy);
+
+          // Display label for rotate commands.
+          final displayLabel = switch (cmd) {
+            'RotateCW' => 'ROTATE CW',
+            'RotateCCW' => 'ROTATE CCW',
+            _ => cmd.toUpperCase(),
+          };
+
           setState(() {
             _isListening = false;
-            _detected = cmd.toUpperCase();
+            _detected = displayLabel;
             _subtitle = 'Tap the mic again';
-            _log.insert(0, cmd);
+            _log.insert(0, displayLabel);
             if (_log.length > 6) _log.removeLast();
           });
           _sendVoiceCommand(cmd);

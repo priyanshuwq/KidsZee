@@ -6,7 +6,6 @@ import '../../core/network/bt_classic_manager.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_typography.dart';
 import '../../core/widgets/app_button.dart';
-import '../../core/providers/controller_mode_provider.dart';
 import 'robot_widgets.dart';
 
 /// Sends Otto DIY Bluetooth commands directly via [BtClassicManager], matching
@@ -66,13 +65,6 @@ class OttoCommands {
   /// a stop must never be dropped.
   static void sendStop() => _dispatch('S');
 
-  /// Logs a servo slider change for debugging. NOTE: the sliders only update
-  /// the local visualiser state — they do NOT transmit to the robot (only the
-  /// Quick Move chips send BT commands). This log confirms the slider fires.
-  static void logServo(int index, String label, double angle) {
-    debugPrint('[Otto] SERVO ${index + 1} "$label" angle=${angle.round()} (local only, not sent)');
-  }
-
   /// Throttled to at most one send every 50ms so repeated taps can't flood the
   /// HC-05 link. Drops (does not queue) sends inside the window.
   static void _send(String command) {
@@ -98,146 +90,334 @@ class OttoCommands {
   }
 }
 
+// ── Movement direction for animation ────────────────────────────────────────
+enum _OttoMove { idle, forward, backward, left, right }
+
 /// Otto Biped Robot Controller
-/// Standard Otto: 4 SG90 micro servos (Left Leg, Right Leg, Left Foot, Right Foot)
-/// Supports adding custom servos for extended builds.
-class OttoScreen extends ConsumerWidget {
+/// Directional buttons for Forward, Backward, Left, Right movement.
+/// Quick Move chips for special actions (dance, jump, gestures).
+class OttoScreen extends ConsumerStatefulWidget {
   const OttoScreen({super.key});
+  @override
+  ConsumerState<OttoScreen> createState() => _OttoScreenState();
+}
+
+class _OttoScreenState extends ConsumerState<OttoScreen> with SingleTickerProviderStateMixin {
+  late AnimationController _animCtrl;
+  _OttoMove _currentMove = _OttoMove.idle;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final servos = ref.watch(ottoServosProvider);
+  void initState() {
+    super.initState();
+    _animCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 600))
+      ..addStatusListener((status) {
+        // Loop the animation while a move is active.
+        if (status == AnimationStatus.completed && _currentMove != _OttoMove.idle) {
+          _animCtrl.forward(from: 0);
+        }
+      });
+  }
 
+  @override
+  void dispose() {
+    _animCtrl.dispose();
+    super.dispose();
+  }
+
+  void _startMove(_OttoMove move, int moveId) {
+    setState(() => _currentMove = move);
+    _animCtrl.forward(from: 0);
+    OttoCommands.sendMove(moveId);
+  }
+
+  void _stopMove() {
+    OttoCommands.sendStop();
+    setState(() => _currentMove = _OttoMove.idle);
+    _animCtrl.stop();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(backgroundColor: AppColors.background, elevation: 0,
         leading: IconButton(icon: const Icon(Icons.arrow_back, color: AppColors.navy), onPressed: () => Navigator.of(context).maybePop()),
         title: Text('Otto Robot', style: AppTypography.headline2()),
-        actions: [
-          IconButton(icon: const Icon(Icons.add_circle_outline, color: AppColors.orange),
-            tooltip: 'Add Servo',
-            onPressed: () => showAddServoDialog(context, ref, ottoServosProvider)),
-        ],
         bottom: PreferredSize(preferredSize: const Size.fromHeight(1), child: Container(height: 1, color: AppColors.divider))),
       body: SingleChildScrollView(padding: const EdgeInsets.all(20),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          // Visualizer
+          // Animated Visualizer
           Container(height: 220, width: double.infinity,
             decoration: BoxDecoration(color: AppColors.cardWhite, borderRadius: BorderRadius.circular(16),
               border: Border.all(color: AppColors.border, width: 1),
               boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.04), offset: const Offset(0, 2), blurRadius: 8)]),
-            child: CustomPaint(painter: _OttoPainter(servos: servos), child: const SizedBox.expand()),
+            child: AnimatedBuilder(
+              animation: _animCtrl,
+              builder: (_, __) => CustomPaint(
+                painter: _OttoAnimatedPainter(
+                  move: _currentMove,
+                  phase: _animCtrl.value,
+                ),
+                child: const SizedBox.expand(),
+              ),
+            ),
           ).animate().fadeIn(),
           const SizedBox(height: 20),
+
+          // Directional Controls
+          Text('CONTROLS', style: AppTypography.label().copyWith(color: AppColors.orange, letterSpacing: 1.2)),
+          const SizedBox(height: 10),
+          _buildDirectionalPad(),
+          const SizedBox(height: 24),
 
           // Quick actions — wired to the Otto DIY BT movement/gesture protocol.
           Text('QUICK MOVES', style: AppTypography.label().copyWith(color: AppColors.orange, letterSpacing: 1.2)),
           const SizedBox(height: 10),
           Wrap(spacing: 10, runSpacing: 10, children: [
-            MoveChip(label: '🚶 Walk Fwd', onTap: () => OttoCommands.sendMove(1)),
-            MoveChip(label: '🔙 Walk Back', onTap: () => OttoCommands.sendMove(2)),
-            MoveChip(label: '↩️ Turn Left', onTap: () => OttoCommands.sendMove(3)),
-            MoveChip(label: '↪️ Turn Right', onTap: () => OttoCommands.sendMove(4)),
-            MoveChip(label: '💃 Dance', onTap: () => OttoCommands.sendMove(8)),
-            MoveChip(label: '🦘 Jump', onTap: () => OttoCommands.sendMove(11)),
-            MoveChip(label: '😊 Happy', onTap: () => OttoCommands.sendGesture(1)),
-            MoveChip(label: '😢 Sad', onTap: () => OttoCommands.sendGesture(3)),
+            MoveChip(label: 'Dance', onTap: () => OttoCommands.sendMove(8)),
+            MoveChip(label: 'Jump', onTap: () => OttoCommands.sendMove(11)),
+            MoveChip(label: 'Happy', onTap: () => OttoCommands.sendGesture(1)),
+            MoveChip(label: 'Sad', onTap: () => OttoCommands.sendGesture(3)),
           ]).animate().fadeIn(),
           const SizedBox(height: 24),
-          // Servo controls
-          Row(children: [
-            Text('SERVO MOTORS (${servos.length})', style: AppTypography.label().copyWith(color: AppColors.orange, letterSpacing: 1.2)),
-            const Spacer(),
-            AppButton(backgroundColor: AppColors.cardWhite, padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              onTap: () => ref.read(ottoServosProvider.notifier).resetAll(),
-              child: Text('Reset All', style: AppTypography.statusText().copyWith(color: AppColors.orange))),
-          ]),
-          const SizedBox(height: 10),
-          ...servos.asMap().entries.map((e) => Padding(
-            padding: const EdgeInsets.only(bottom: 10),
-            child: ServoTile(
-              index: e.key, config: e.value,
-              onAngleChanged: (v) {
-                OttoCommands.logServo(e.key, e.value.label, v);
-                ref.read(ottoServosProvider.notifier).updateAngle(e.key, v);
-              },
-              onRemove: e.key >= 4 ? () => ref.read(ottoServosProvider.notifier).removeServo(e.key) : null,
-              onRename: (name) => ref.read(ottoServosProvider.notifier).renameServo(e.key, name),
-            ).animate().fadeIn(delay: (e.key * 60).ms).slideX(begin: 0.05, end: 0),
-          )),
-          const SizedBox(height: 16),
-          // STOP — send the Otto `S` (stop + home) command, then reset local sliders.
+
+          // STOP
           SizedBox(width: double.infinity, child: AppButton(
             backgroundColor: AppColors.stopRed,
-            onTap: () {
-              OttoCommands.sendStop();
-              ref.read(ottoServosProvider.notifier).resetAll();
-            },
+            onTap: _stopMove,
             padding: const EdgeInsets.symmetric(vertical: 16),
-            child: Center(child: Text('STOP & RESET', style: AppTypography.headline3().copyWith(color: Colors.white))))),
+            child: Center(child: Text('STOP', style: AppTypography.headline3().copyWith(color: Colors.white))))),
         ])),
+    );
+  }
+
+  Widget _buildDirectionalPad() {
+    return Center(
+      child: SizedBox(
+        width: 220,
+        height: 180,
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            // Forward — top center
+            Positioned(
+              top: 0,
+              left: 0, right: 0,
+              child: Center(child: _DpadButton(
+                icon: Icons.arrow_upward_rounded,
+                label: 'FWD',
+                isActive: _currentMove == _OttoMove.forward,
+                onTapDown: () => _startMove(_OttoMove.forward, 1),
+                onTapUp: _stopMove,
+              )),
+            ),
+            // Backward — bottom center
+            Positioned(
+              bottom: 0,
+              left: 0, right: 0,
+              child: Center(child: _DpadButton(
+                icon: Icons.arrow_downward_rounded,
+                label: 'BACK',
+                isActive: _currentMove == _OttoMove.backward,
+                onTapDown: () => _startMove(_OttoMove.backward, 2),
+                onTapUp: _stopMove,
+              )),
+            ),
+            // Left — middle left
+            Positioned(
+              left: 0,
+              top: 0, bottom: 0,
+              child: Center(child: _DpadButton(
+                icon: Icons.arrow_back_rounded,
+                label: 'LEFT',
+                isActive: _currentMove == _OttoMove.left,
+                onTapDown: () => _startMove(_OttoMove.left, 3),
+                onTapUp: _stopMove,
+              )),
+            ),
+            // Right — middle right
+            Positioned(
+              right: 0,
+              top: 0, bottom: 0,
+              child: Center(child: _DpadButton(
+                icon: Icons.arrow_forward_rounded,
+                label: 'RIGHT',
+                isActive: _currentMove == _OttoMove.right,
+                onTapDown: () => _startMove(_OttoMove.right, 4),
+                onTapUp: _stopMove,
+              )),
+            ),
+          ],
+        ),
+      ),
+    ).animate().fadeIn();
+  }
+}
+
+// ── D-Pad Button ────────────────────────────────────────────────────────────
+class _DpadButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool isActive;
+  final VoidCallback onTapDown;
+  final VoidCallback onTapUp;
+
+  const _DpadButton({
+    required this.icon,
+    required this.label,
+    required this.isActive,
+    required this.onTapDown,
+    required this.onTapUp,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTapDown: (_) => onTapDown(),
+      onTapUp: (_) => onTapUp(),
+      onTapCancel: onTapUp,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 120),
+        width: 64,
+        height: 64,
+        decoration: BoxDecoration(
+          color: isActive ? AppColors.orange : AppColors.cardWhite,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: isActive ? AppColors.orange : AppColors.border, width: 1.5),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: isActive ? 0.12 : 0.05),
+              offset: Offset(0, isActive ? 1 : 3),
+              blurRadius: isActive ? 4 : 8,
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, size: 24, color: isActive ? Colors.white : AppColors.navy),
+            Text(label, style: AppTypography.mono(size: 9, color: isActive ? Colors.white : AppColors.navy)),
+          ],
+        ),
+      ),
     );
   }
 }
 
-// ── Visualizer ──────────────────────────────────────────────────────────────
-class _OttoPainter extends CustomPainter {
-  final List<ServoConfig> servos;
-  _OttoPainter({required this.servos});
+// ── Animated Visualizer ─────────────────────────────────────────────────────
+class _OttoAnimatedPainter extends CustomPainter {
+  final _OttoMove move;
+  final double phase; // 0.0 → 1.0
+
+  _OttoAnimatedPainter({required this.move, required this.phase});
 
   @override
   void paint(Canvas canvas, Size size) {
-    // Otto default angles: 90. Swing is (angle - 90)
-    final leftLegAng = (servos.isNotEmpty ? servos[0].angle : 90) - 90;
-    final rightLegAng = (servos.length > 1 ? servos[1].angle : 90) - 90;
-    final leftFootAng = (servos.length > 2 ? servos[2].angle : 90) - 90;
-    final rightFootAng = (servos.length > 3 ? servos[3].angle : 90) - 90;
-    final leftHandAng = (servos.length > 4 ? servos[4].angle : 90) - 90;
-    final rightHandAng = (servos.length > 5 ? servos[5].angle : 90) - 90;
+    // Compute limb offsets based on current move and animation phase.
+    // Phase goes 0→1 per cycle; we use sin(phase * 2π) for smooth oscillation.
+    final cycle = math.sin(phase * 2 * math.pi);
+
+    double leftLegSwing = 0;
+    double rightLegSwing = 0;
+    double leftFootSwing = 0;
+    double rightFootSwing = 0;
+    double bodyOffsetX = 0;
+    double bodyOffsetY = 0;
+
+    switch (move) {
+      case _OttoMove.forward:
+        // Walking gait: legs alternate, feet follow.
+        leftLegSwing = cycle * 18;
+        rightLegSwing = -cycle * 18;
+        leftFootSwing = cycle * 8;
+        rightFootSwing = -cycle * 8;
+        bodyOffsetY = -cycle.abs() * 3; // slight bounce
+        break;
+      case _OttoMove.backward:
+        // Reverse gait.
+        leftLegSwing = -cycle * 18;
+        rightLegSwing = cycle * 18;
+        leftFootSwing = -cycle * 8;
+        rightFootSwing = cycle * 8;
+        bodyOffsetY = -cycle.abs() * 3;
+        break;
+      case _OttoMove.left:
+        // Lean and shift left.
+        leftLegSwing = cycle * 12;
+        rightLegSwing = cycle * 12;
+        leftFootSwing = cycle * 15;
+        rightFootSwing = -cycle * 5;
+        bodyOffsetX = cycle * 6;
+        break;
+      case _OttoMove.right:
+        // Lean and shift right.
+        leftLegSwing = -cycle * 12;
+        rightLegSwing = -cycle * 12;
+        leftFootSwing = cycle * 5;
+        rightFootSwing = -cycle * 15;
+        bodyOffsetX = -cycle * 6;
+        break;
+      case _OttoMove.idle:
+        // Gentle breathing/idle sway.
+        bodyOffsetY = math.sin(phase * 2 * math.pi) * 1.5;
+        break;
+    }
 
     final borderPaint = Paint()..color = AppColors.navy..strokeWidth = 24..strokeCap = StrokeCap.round..style = PaintingStyle.stroke;
     final fillPaint = Paint()..color = AppColors.cardWhite..strokeWidth = 16..strokeCap = StrokeCap.round..style = PaintingStyle.stroke;
     final jointPaint = Paint()..color = AppColors.orange;
     final jointBorder = Paint()..color = AppColors.navy..style = PaintingStyle.stroke..strokeWidth = 2.5;
 
-    final center = Offset(size.width / 2, size.height / 2 - 30);
+    final center = Offset(size.width / 2 + bodyOffsetX, size.height / 2 - 30 + bodyOffsetY);
 
     // Left Leg
     final leftHip = center + const Offset(-28, 37);
-    final leftKnee = leftHip + Offset(math.sin(leftLegAng * math.pi / 180) * 45, math.cos(leftLegAng * math.pi / 180) * 45);
+    final leftKnee = leftHip + Offset(
+      math.sin(leftLegSwing * math.pi / 180) * 45,
+      math.cos(leftLegSwing * math.pi / 180) * 45,
+    );
 
     // Left Foot
-    final lfAngle = (leftLegAng + leftFootAng) * math.pi / 180;
+    final lfAngle = (leftLegSwing + leftFootSwing) * math.pi / 180;
     final leftToe = leftKnee + Offset(math.cos(lfAngle) * 22, -math.sin(lfAngle) * 22);
     final leftHeel = leftKnee - Offset(math.cos(lfAngle) * 12, -math.sin(lfAngle) * 12);
 
     // Right Leg
     final rightHip = center + const Offset(28, 37);
-    final rightKnee = rightHip + Offset(math.sin(rightLegAng * math.pi / 180) * 45, math.cos(rightLegAng * math.pi / 180) * 45);
+    final rightKnee = rightHip + Offset(
+      math.sin(rightLegSwing * math.pi / 180) * 45,
+      math.cos(rightLegSwing * math.pi / 180) * 45,
+    );
 
     // Right Foot
-    final rfAngle = (rightLegAng + rightFootAng) * math.pi / 180;
+    final rfAngle = (rightLegSwing + rightFootSwing) * math.pi / 180;
     final rightToe = rightKnee + Offset(math.cos(rfAngle) * 22, -math.sin(rfAngle) * 22);
     final rightHeel = rightKnee - Offset(math.cos(rfAngle) * 12, -math.sin(rfAngle) * 12);
 
-    // Hands
+    // Hands (idle sway only)
     final leftShoulder = center + const Offset(-40, 5);
-    final leftHand = leftShoulder + Offset(-math.sin(leftHandAng * math.pi / 180) * 35, math.cos(leftHandAng * math.pi / 180) * 35);
+    final leftHand = leftShoulder + Offset(
+      -math.sin((cycle * 8) * math.pi / 180) * 35,
+      math.cos((cycle * 8) * math.pi / 180) * 35,
+    );
 
     final rightShoulder = center + const Offset(40, 5);
-    final rightHand = rightShoulder + Offset(math.sin(rightHandAng * math.pi / 180) * 35, math.cos(rightHandAng * math.pi / 180) * 35);
+    final rightHand = rightShoulder + Offset(
+      math.sin((-cycle * 8) * math.pi / 180) * 35,
+      math.cos((-cycle * 8) * math.pi / 180) * 35,
+    );
 
-    // Draw borders
-    if (servos.length > 4) canvas.drawLine(leftShoulder, leftHand, borderPaint);
-    if (servos.length > 5) canvas.drawLine(rightShoulder, rightHand, borderPaint);
+    // Draw borders (hands, feet, legs)
+    canvas.drawLine(leftShoulder, leftHand, borderPaint);
+    canvas.drawLine(rightShoulder, rightHand, borderPaint);
     canvas.drawLine(leftHeel, leftToe, borderPaint);
     canvas.drawLine(rightHeel, rightToe, borderPaint);
     canvas.drawLine(leftHip, leftKnee, borderPaint);
     canvas.drawLine(rightHip, rightKnee, borderPaint);
 
     // Draw fills
-    if (servos.length > 4) canvas.drawLine(leftShoulder, leftHand, fillPaint);
-    if (servos.length > 5) canvas.drawLine(rightShoulder, rightHand, fillPaint);
+    canvas.drawLine(leftShoulder, leftHand, fillPaint);
+    canvas.drawLine(rightShoulder, rightHand, fillPaint);
     canvas.drawLine(leftHeel, leftToe, fillPaint);
     canvas.drawLine(rightHeel, rightToe, fillPaint);
     canvas.drawLine(leftHip, leftKnee, fillPaint);
@@ -255,23 +435,14 @@ class _OttoPainter extends CustomPainter {
     canvas.drawCircle(center + const Offset(20, -10), 5, Paint()..color = AppColors.orange);
 
     // Joints
-    List<Offset> joints = [leftHip, leftKnee, rightHip, rightKnee];
-    if (servos.length > 4) joints.add(leftShoulder);
-    if (servos.length > 5) joints.add(rightShoulder);
+    final joints = [leftHip, leftKnee, rightHip, rightKnee, leftShoulder, rightShoulder];
     for (final pt in joints) {
       canvas.drawCircle(pt, 8.5, jointPaint);
       canvas.drawCircle(pt, 8.5, jointBorder);
     }
-
-    // Labels
-    drawLabel(canvas, 'Left Leg', leftHip, leftHip + const Offset(-50, -20));
-    drawLabel(canvas, 'Right Leg', rightHip, rightHip + const Offset(50, -20));
-    drawLabel(canvas, 'Left Foot', leftKnee, leftKnee + const Offset(-50, 20));
-    drawLabel(canvas, 'Right Foot', rightKnee, rightKnee + const Offset(50, 20));
-    if (servos.length > 4) drawLabel(canvas, 'Left Hand', leftShoulder, leftShoulder + const Offset(-40, -10));
-    if (servos.length > 5) drawLabel(canvas, 'Right Hand', rightShoulder, rightShoulder + const Offset(40, -10));
   }
 
   @override
-  bool shouldRepaint(covariant _OttoPainter oldDelegate) => true;
+  bool shouldRepaint(covariant _OttoAnimatedPainter oldDelegate) =>
+      oldDelegate.move != move || oldDelegate.phase != phase;
 }
