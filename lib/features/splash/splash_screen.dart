@@ -20,7 +20,7 @@ class _SplashScreenState extends State<SplashScreen> {
   @override
   void initState() {
     super.initState();
-    _controller = VideoPlayerController.asset('assests/Splash/animaton1.mp4')
+    _controller = VideoPlayerController.asset('assests/Splash/kidzee_animation.mp4')
       ..initialize().then((_) {
         _controller.setVolume(0.0); // Mute to ensure playback
         setState(() {});
@@ -33,10 +33,17 @@ class _SplashScreenState extends State<SplashScreen> {
     _controller.addListener(() {
       if (_controller.value.hasError) {
         _navigate(); // Skip on playback error
-      } else if (_controller.value.isInitialized &&
-          !_controller.value.isPlaying &&
-          _controller.value.position >= _controller.value.duration) {
-        _navigate();
+      } else if (_controller.value.isInitialized) {
+        final position = _controller.value.position;
+        final duration = _controller.value.duration;
+        
+        // Ensure video actually started playing before checking for completion
+        if (duration > Duration.zero && position.inMilliseconds > 500) {
+          if (!_controller.value.isPlaying && position >= duration) {
+            // Once the video finishes playing entirely, navigate to the next screen.
+            _navigate();
+          }
+        }
       }
     });
 
@@ -70,30 +77,18 @@ class _SplashScreenState extends State<SplashScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.white,
-      body: SafeArea(
-        child: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              if (_controller.value.isInitialized)
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 24.0),
-                  child: AspectRatio(
-                    aspectRatio: _controller.value.aspectRatio,
-                    child: VideoPlayer(_controller),
-                  ),
-                )
-              else
-                const CircularProgressIndicator(color: AppColors.orange),
-              const SizedBox(height: 32),
-              Text('Connecting to your imagination...',
-                      style: AppTypography.statusText())
-                  .animate(delay: 1000.ms)
-                  .fadeIn(),
-            ],
-          ),
-        ),
-      ),
+      body: _controller.value.isInitialized
+          ? SizedBox.expand(
+              child: FittedBox(
+                fit: BoxFit.cover,
+                child: SizedBox(
+                  width: _controller.value.size.width,
+                  height: _controller.value.size.height,
+                  child: VideoPlayer(_controller),
+                ),
+              ),
+            )
+          : const SizedBox.shrink(),
     );
   }
 }

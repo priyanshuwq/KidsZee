@@ -57,5 +57,5 @@ flutter:
 
   assets:
     - assests/kidszee_transparent.png
-    - assests/Splash/animaton1.mp4
+    - assests/Splash/kidzee_animation.mp4
     - assests/wombatics_otto_diy_robot.glb
